@@ -1,5 +1,7 @@
 (() => {
   const BOOKMARK_KEY = "xistory:bookmarks:v1";
+  const TAG_KEY = "xistory:tags:v1";
+  const VALID_TAGS = ["red", "orange", "yellow", "green", "blue"];
 
   const el = (id) => document.getElementById(id);
   const listView = el("list-view");
@@ -9,13 +11,65 @@
   const searchEl = el("search");
   const tabsEl = el("tabs");
   const imageWrap = el("image-wrap");
+  const tagRow = el("tag-row");
 
   let DATA = { problems: [], sections: {} };
   let currentTab = "all";
   let bookmarks = new Set(JSON.parse(localStorage.getItem(BOOKMARK_KEY) || "[]"));
+  let tags = (() => {
+    try { return JSON.parse(localStorage.getItem(TAG_KEY) || "{}"); }
+    catch { return {}; }
+  })();
 
   const saveBookmarks = () =>
     localStorage.setItem(BOOKMARK_KEY, JSON.stringify([...bookmarks]));
+  const saveTags = () =>
+    localStorage.setItem(TAG_KEY, JSON.stringify(tags));
+
+  const getTag = (code) => {
+    const t = tags[code];
+    return VALID_TAGS.includes(t) ? t : "";
+  };
+  const setTag = (code, tag) => {
+    if (!tag) delete tags[code];
+    else if (VALID_TAGS.includes(tag)) tags[code] = tag;
+    saveTags();
+  };
+
+  // ===== Preload + loading state =====
+  const preloaded = new Map(); // code -> HTMLImageElement
+  function preload(code) {
+    if (preloaded.has(code)) return;
+    const img = new Image();
+    img.src = `${code}.png`;
+    preloaded.set(code, img);
+  }
+  function preloadNeighbors(code) {
+    const sorted = siblingPool();
+    const idx = sorted.findIndex((p) => p.code === code);
+    if (idx < 0) return;
+    const next = sorted[(idx + 1) % sorted.length];
+    const prev = sorted[(idx - 1 + sorted.length) % sorted.length];
+    preload(next.code);
+    preload(prev.code);
+  }
+
+  function setDetailImage(code) {
+    const img = el("detail-img");
+    imageWrap.classList.remove("errored");
+    imageWrap.classList.add("loading");
+    img.onload = () => imageWrap.classList.remove("loading");
+    img.onerror = () => {
+      imageWrap.classList.remove("loading");
+      imageWrap.classList.add("errored");
+    };
+    img.src = `${code}.png`;
+    img.alt = code;
+    // Cached? then onload may have already fired synchronously
+    if (img.complete && img.naturalWidth > 0) {
+      imageWrap.classList.remove("loading");
+    }
+  }
 
   const sectionOf = (code) => code[0];
 
@@ -54,7 +108,8 @@
     const frag = document.createDocumentFragment();
     for (const p of items) {
       const li = document.createElement("li");
-      li.className = "card";
+      const tag = getTag(p.code);
+      li.className = "card" + (tag ? ` tag-${tag}` : "");
       li.dataset.code = p.code;
       li.innerHTML = `
         ${bookmarks.has(p.code) ? `<span class="star">⭐</span>` : ""}
@@ -65,6 +120,13 @@
       frag.appendChild(li);
     }
     listEl.appendChild(frag);
+  }
+
+  function updateTagPicker(code) {
+    const current = getTag(code);
+    tagRow.querySelectorAll(".tag-chip").forEach((btn) => {
+      btn.classList.toggle("selected", (btn.dataset.tag || "") === current);
+    });
   }
 
   function renderTabs() {
@@ -81,9 +143,8 @@
     el("detail-code").textContent = p.code;
     el("detail-section").textContent =
       `${sectionOf(p.code)} · ${DATA.sections[sectionOf(p.code)] || ""}`;
-    const img = el("detail-img");
-    img.src = `${p.code}.png`;
-    img.alt = p.code;
+
+    setDetailImage(p.code);
 
     const ansBox = el("answer");
     ansBox.textContent = p.answer ?? "(정답 미등록)";
@@ -91,6 +152,10 @@
     el("reveal-btn").textContent = "정답 보기";
 
     updateBookmarkBtn(p.code);
+    updateTagPicker(p.code);
+
+    // Preload neighbors for instant prev/next
+    preloadNeighbors(p.code);
 
     if (animate === "left" || animate === "right") {
       imageWrap.classList.remove("swipe-out-left", "swipe-out-right", "swipe-in");
@@ -254,6 +319,21 @@
   el("bookmark-btn").addEventListener("click", toggleBookmark);
   el("prev-btn").addEventListener("click", () => moveNeighbor(-1));
   el("next-btn").addEventListener("click", () => moveNeighbor(1));
+
+  tagRow.addEventListener("click", (e) => {
+    const btn = e.target.closest(".tag-chip");
+    if (!btn) return;
+    const code = el("detail-code").textContent;
+    if (!code) return;
+    const newTag = btn.dataset.tag || "";
+    const current = getTag(code);
+    // Clicking the already-selected colored chip clears the tag (quick toggle)
+    const final = current === newTag && newTag !== "" ? "" : newTag;
+    setTag(code, final);
+    updateTagPicker(code);
+    // Keep list in sync for when user returns
+    renderList();
+  });
 
   el("reveal-btn").addEventListener("click", () => {
     const ans = el("answer");
